@@ -1,0 +1,85 @@
+---
+title: "simple_linear_models"
+author: "XZ"
+date: "July 14, 2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the packages and data
+```{r, message=F}
+library(data.table)
+library(lmerTest)
+library(lavaan)
+
+setwd("/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH")
+source('dataloader.R')
+```
+
+## Simple hierarchical regression on residualized gain model
+```{r}
+## check the assumption of residualized gain model
+## predictors and covariate should have small correlations
+#' @reference Castro-Schilo & Grimm, 2018
+
+dt[, head(.SD, 1), client_epi][!is.na(pt_pretest), cor(pt_pretest, empathy)]
+dt[, head(.SD, 1), client_epi][!is.na(pt_pretest), cor(pt_pretest, mispirit)]
+dt[, head(.SD, 1), client_epi][!is.na(pt_pretest), cor(pt_pretest, ave_QUO)]
+dt[, head(.SD, 1), client_epi][!is.na(pt_pretest), cor(pt_pretest, (ave_REC+ave_RES))]
+dt[, head(.SD, 1), client_epi][!is.na(pt_pretest), cor(pt_pretest, (ave_FA+ave_GI+ave_MIA+ave_MIN+ave_QUC+ave_ST))]
+
+## modeling
+model0_lm_intv <- lm('pt_posttest ~ 1', dt[, head(.SD, 1), client_epi])
+model1_lm_intv <- lm('pt_posttest ~ pt_pretest', dt[, head(.SD, 1), client_epi])
+model2_lm_intv <- lm('pt_posttest ~ pt_pretest+empathy', dt[, head(.SD, 1), client_epi])
+model3_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit', dt[, head(.SD, 1), client_epi])
+model4_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO', 
+     dt[, head(.SD, 1), client_epi])
+model5_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC', 
+     dt[, head(.SD, 1), client_epi])
+model6_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES', 
+     dt[, head(.SD, 1), client_epi])
+model7_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI+ave_MIA+ave_MIN+ave_QUC+ave_ST', 
+     dt[, head(.SD, 1), client_epi])
+
+anova(
+  model0_lm_intv,
+  model1_lm_intv,
+  model2_lm_intv,
+  model3_lm_intv,
+  model4_lm_intv,
+  model5_lm_intv,
+  model6_lm_intv,
+  model7_lm_intv
+)
+
+## inspect significant models
+summary(model3_lm_intv)
+summary(model5_lm_intv)
+summary(model7_lm_intv)
+```
+
+## Check if the effect of mispirit on pt_posttest is mediated by REC
+```{r}
+dt[, ave_REC_100 := ave_REC*100]
+formula <- '
+pt_posttest ~ pt_pretest + ave_REC_100 + mispirit
+ave_REC_100 ~ mispirit
+'
+
+model_med <- sem(
+  model=formula,
+  data=dt[, .SD[1], client_epi]
+)
+
+summary(model_med, fit.measures=T, rsquare=T)
+```
+
