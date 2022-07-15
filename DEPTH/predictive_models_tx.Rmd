@@ -1,0 +1,180 @@
+---
+title: "Predicting models with intervention codes as predictors"
+author: "XZ"
+date: "July 14, 2022"
+output: html_document
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(root.dir='/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH')
+```
+
+## Load packages and dataset
+```{r, message=F, warning=F}
+library(caret)
+
+setwd("/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH")
+source('dataloader.R')
+# source('metrics.R')
+```
+
+## Select needed variables
+```{r}
+dat <- dt[, .SD[1],
+          client_epi,
+          .SDcols=c('pt_posttest', 
+                    'pt_pretest', 
+                    'empathy',
+                    'mispirit',
+                    'ave_FA', 
+                    'ave_GI', 
+                    'ave_MIN', 
+                    'ave_MIA', 
+                    'ave_QUC', 
+                    'ave_QUO', 
+                    'ave_REC',
+                    'ave_RES', 
+                    'ave_ST'
+                    )
+          ][, -1]
+
+```
+
+## get the baseline using simple linear regression  
+To account for biases due to random data splitting, the entire process is repeated M times and taking the average.  
+`M`: 1000
+
+```{r, warning=F}
+r2s <- c()
+rmses <- c()
+
+set.seed(123)
+
+i <- 1
+while(i <= 1000) {
+  split_ind <- createDataPartition(dat$pt_posttest, p=0.8, list=F)
+  dat_train <- dat[split_ind]
+  dat_test <- dat[!split_ind]
+  
+  model_baseline_misc <- 
+    lm(pt_posttest ~ .,
+       data=dat_train[, .SD, .SDcols=!ncol(dat_train)]
+    )
+  
+  preds <- predict(model_baseline_misc, dat_test[, .SD, .SDcols=!'pt_posttest'])
+  r2 <- R2(preds, dat_test$pt_posttest)
+  rmse <- RMSE(preds, dat_test$pt_posttest)
+
+  r2s <- c(r2s, r2)
+  rmses <- c(rmses, rmse)
+  i <- i + 1
+}
+
+## report the metrics
+print('Mean R2:')
+mean(r2s, na.rm=T)
+print('Mean RMSE:')
+mean(rmses, na.rm=T)
+```
+
+## create a function that fits `caret` models
+default setting:  
+`validation method`: Repeated 10-fold cross-validation, repeated 5 times  
+`search method`: grid search  
+`loss function`: RMSE  
+`M`: 100
+
+```{r}
+caretTrain <- function(DT, algorithm, iteration, search_method='grid', loss_function='RMSE', seed=123) {
+  
+  r2s <- c()
+  rmses <- c()
+  
+  set.seed(seed)
+  
+  i <- 1
+  while(i <= iteration) {
+    split_ind <- createDataPartition(DT$pt_posttest, p=0.8, list=F)
+    dat_train <- DT[split_ind]
+    dat_test <- DT[!split_ind]
+    
+    fitControl_misc <- trainControl(
+      method='repeatedcv',
+      number=10,
+      repeats=5,
+      search=search_method,
+      selectionFunction='best',
+      savePredictions=T
+    )
+    model_misc <- train(
+      pt_posttest ~ .,
+      data=dat_train,
+      method=algorithm,
+      metric=loss_function,
+      trControl=fitControl_misc
+    )
+    
+    preds <- predict(model_misc, dat_test[, .SD, .SDcols=!'pt_posttest'])
+    r2 <- R2(preds, dat_test$pt_posttest)
+    rmse <- RMSE(preds, dat_test$pt_posttest)
+  
+    r2s <- c(r2s, r2)
+    rmses <- c(rmses, rmse)
+    i <- i + 1
+  }
+  
+  ## report the metrics
+  print('Mean R2:')
+  print(mean(r2s, na.rm=T))
+  print('Mean RMSE:')
+  print(mean(rmses, na.rm=T))
+}
+```
+
+## General Setting:  
+`validation`: repeated 10-fold cross-validation (repeat=5)  
+
+## test SVM with Gaussian kernel
+```{r}
+caretTrain(dat, 'svmRadial', 100)
+```
+
+## test LASSO
+```{r}
+caretTrain(dat, 'lasso', 100)
+```
+
+## test elastic net
+```{r}
+caretTrain(dat, 'enet', 100)
+```
+
+## test stochastic gradient boosting
+```{r}
+caretTrain(dat, 'gbm', 100)
+```
+
+## test extreme gradient boosting
+```{r}
+caretTrain(dat, 'xgbDART', 100)
+```
+
+## test k nearest neighbors
+```{r}
+caretTrain(dat, 'knn', 100)
+```
+
+## test random forest
+```{r}
+caretTrain(dat, 'ranger', 100)
+```
+
+## test full connected neural networks
+```{r}
+caretTrain(dat, 'mlp', 100)
+```
+
+## test stacked autoencoder deep neural net
+```{r}
+caretTrain(dat, 'dnn', 100)
+```
