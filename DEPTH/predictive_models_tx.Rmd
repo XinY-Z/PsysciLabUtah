@@ -162,7 +162,7 @@ model_sgb_misc <- caretTrain(dat, 'gbm', 30)
 
 ## test extreme gradient boosting
 ```{r}
-caretTrain(dat, 'xgbDART', 100)
+caretTrain(dat, 'xgbDART', 30)
 ```
 
 ## test k nearest neighbors
