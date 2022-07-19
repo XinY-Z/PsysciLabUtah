@@ -37,7 +37,63 @@ dat <- dt[, .SD[1],
                     'ave_ST'
                     )
           ][, -1]
+```
 
+## create a function that fits `caret` models
+default setting:  
+`validation method`: Repeated 10-fold cross-validation, repeated 5 times  
+`search method`: grid search  
+`loss function`: RMSE  
+`M`: 100
+
+```{r}
+caretTrain <- function(DT, algorithm, iteration, search_method='grid', loss_function='RMSE', seed=123, ...) {
+  
+  r2s <- c()
+  rmses <- c()
+  
+  set.seed(seed)
+  
+  i <- 1
+  while(i <= iteration) {
+    split_ind <- createDataPartition(DT$pt_posttest, p=0.8, list=F)
+    dat_train <- DT[split_ind]
+    dat_test <- DT[!split_ind]
+    
+    fitControl_misc <- trainControl(
+      method='repeatedcv',
+      number=10,
+      repeats=5,
+      search=search_method,
+      selectionFunction='best',
+      savePredictions=T
+    )
+    model_misc <- train(
+      pt_posttest ~ .,
+      data=dat_train,
+      method=algorithm,
+      metric=loss_function,
+      trControl=fitControl_misc,
+      ...
+    )
+    
+    preds <- predict(model_misc, dat_test[, .SD, .SDcols=!'pt_posttest'])
+    r2 <- R2(preds, dat_test$pt_posttest)
+    rmse <- RMSE(preds, dat_test$pt_posttest)
+  
+    r2s <- c(r2s, r2)
+    rmses <- c(rmses, rmse)
+    i <- i + 1
+  }
+  
+  ## report the metrics
+  print('Mean R2:')
+  print(mean(r2s, na.rm=T))
+  print('Mean RMSE:')
+  print(mean(rmses, na.rm=T))
+  
+  return(model_misc)
+}
 ```
 
 ## get the baseline using simple linear regression  
@@ -77,82 +133,32 @@ print('Mean RMSE:')
 mean(rmses, na.rm=T)
 ```
 
-## create a function that fits `caret` models
-default setting:  
-`validation method`: Repeated 10-fold cross-validation, repeated 5 times  
-`search method`: grid search  
-`loss function`: RMSE  
-`M`: 100
-
-```{r}
-caretTrain <- function(DT, algorithm, iteration, search_method='grid', loss_function='RMSE', seed=123) {
-  
-  r2s <- c()
-  rmses <- c()
-  
-  set.seed(seed)
-  
-  i <- 1
-  while(i <= iteration) {
-    split_ind <- createDataPartition(DT$pt_posttest, p=0.8, list=F)
-    dat_train <- DT[split_ind]
-    dat_test <- DT[!split_ind]
-    
-    fitControl_misc <- trainControl(
-      method='repeatedcv',
-      number=10,
-      repeats=5,
-      search=search_method,
-      selectionFunction='best',
-      savePredictions=T
-    )
-    model_misc <- train(
-      pt_posttest ~ .,
-      data=dat_train,
-      method=algorithm,
-      metric=loss_function,
-      trControl=fitControl_misc
-    )
-    
-    preds <- predict(model_misc, dat_test[, .SD, .SDcols=!'pt_posttest'])
-    r2 <- R2(preds, dat_test$pt_posttest)
-    rmse <- RMSE(preds, dat_test$pt_posttest)
-  
-    r2s <- c(r2s, r2)
-    rmses <- c(rmses, rmse)
-    i <- i + 1
-  }
-  
-  ## report the metrics
-  print('Mean R2:')
-  print(mean(r2s, na.rm=T))
-  print('Mean RMSE:')
-  print(mean(rmses, na.rm=T))
-}
-```
-
-## General Setting:  
+## General setting for `caret` models:  
 `validation`: repeated 10-fold cross-validation (repeat=5)  
 
 ## test SVM with Gaussian kernel
 ```{r}
-caretTrain(dat, 'svmRadial', 100)
+model_svm_misc <- caretTrain(dat, 'svmRadial', 100)
 ```
 
 ## test LASSO
 ```{r}
-caretTrain(dat, 'lasso', 100)
+model_lasso_misc <- caretTrain(dat, 'lasso', 100)
 ```
 
 ## test elastic net
 ```{r}
-caretTrain(dat, 'enet', 100)
+model_enet_misc <- caretTrain(dat, 'enet', 100)
 ```
 
 ## test stochastic gradient boosting
 ```{r}
-caretTrain(dat, 'gbm', 100)
+model_sgb_misc <- caretTrain(dat, 'gbm', 30)
 ```
+[1] "Mean R2:"
+[1] 0.3912287
+[1] "Mean RMSE:"
+[1] 0.5989364
 
 ## test extreme gradient boosting
 ```{r}
@@ -166,15 +172,20 @@ caretTrain(dat, 'knn', 100)
 
 ## test random forest
 ```{r}
-caretTrain(dat, 'ranger', 100)
+model_rf_misc <- caretTrain(dat, 'ranger', 30)
 ```
 
 ## test full connected neural networks
 ```{r}
-caretTrain(dat, 'mlp', 100)
+model_mlp_misc <- caretTrain(dat, 'mlp', 30)
 ```
 
 ## test stacked autoencoder deep neural net
 ```{r}
-caretTrain(dat, 'dnn', 100)
+model_dnn_misc <- caretTrain(dat, 'dnn', 1)
 ```
+[1] "Mean R2:"
+[1] 0.01432013
+[1] "Mean RMSE:"
+[1] 0.7839144
+
