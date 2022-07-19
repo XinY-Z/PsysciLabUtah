@@ -6,14 +6,14 @@ output: html_document
 ---
 
 ```{r setup, include=F}
-knitr::opts_chunk$set(root.dir='/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH')
+knitr::opts_chunk$set(root.dir=paste0(getwd(), '/DEPTH'))
 ```
 
 ## Load packages and dataset
 ```{r, message=F, warning=F}
 library(caret)
 
-setwd("/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH")
+setwd(paste0(getwd(), '/DEPTH'))
 source('dataloader.R')
 # source('metrics.R')
 ```
