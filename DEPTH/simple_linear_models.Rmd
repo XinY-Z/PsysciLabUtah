@@ -6,16 +6,17 @@ output: html_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(root.dir=paste0(getwd(), '/DEPTH'))
 ```
 
 ## Load the packages and data
-```{r, message=F}
+```{r, message=F, warning=F}
 library(data.table)
 library(lmerTest)
 library(lavaan)
+library(brms)
 
-setwd("/uufs/chpc.utah.edu/common/HIPAA/u1318593/RProjects/PsysciLabUtah/DEPTH")
+setwd("./DEPTH")
 source('dataloader.R')
 ```
 
@@ -47,6 +48,21 @@ model6_lm_intv <-
   lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES', 
      dt[, head(.SD, 1), client_epi])
 model7_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA', 
+     dt[, head(.SD, 1), client_epi])
+model8_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI', 
+     dt[, head(.SD, 1), client_epi])
+model9_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI+ave_MIA', 
+     dt[, head(.SD, 1), client_epi])
+model10_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI+ave_MIA+ave_MIN', 
+     dt[, head(.SD, 1), client_epi])
+model11_lm_intv <- 
+  lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI+ave_MIA+ave_MIN+ave_QUC', 
+     dt[, head(.SD, 1), client_epi])
+model12_lm_intv <- 
   lm('pt_posttest ~ pt_pretest+empathy+mispirit+ave_QUO+ave_REC+ave_RES+ave_FA+ave_GI+ave_MIA+ave_MIN+ave_QUC+ave_ST', 
      dt[, head(.SD, 1), client_epi])
 
@@ -58,28 +74,84 @@ anova(
   model4_lm_intv,
   model5_lm_intv,
   model6_lm_intv,
-  model7_lm_intv
+  model7_lm_intv,
+  model8_lm_intv,
+  model9_lm_intv,
+  model10_lm_intv,
+  model11_lm_intv,
+  model12_lm_intv
 )
 
 ## inspect significant models
 summary(model3_lm_intv)
 summary(model5_lm_intv)
-summary(model7_lm_intv)
+summary(model8_lm_intv)
+summary(model9_lm_intv)
 ```
+
+Significant predictors: `REC`, `mispirit`, `GI`. But significance of mispirit disappeared after adding rec.
 
 ## Check if the effect of mispirit on pt_posttest is mediated by REC
 ```{r}
-dt[, ave_REC_100 := ave_REC*100]
-formula <- '
-pt_posttest ~ pt_pretest + ave_REC_100 + mispirit
-ave_REC_100 ~ mispirit
+eq <- '
+  pt_posttest ~ pt_pretest + ave_REC + mispirit
+  ave_REC ~ mispirit
 '
-
-model_med <- sem(
-  model=formula,
-  data=dt[, .SD[1], client_epi]
-)
+model_med <- sem(model=eq, data=dt[, .SD[1], client_epi])
 
 summary(model_med, fit.measures=T, rsquare=T)
 ```
+
+Complete metiation found. Zac: People coded mispirit partly by looking at REC.
+
+
+## Multilevel models to assess grouping effects
+### Assess null model to estimate therapist effect
+
+Residualized gain model is used. ICC essentially estimates therapist effect in therapeutic gain.
+
+```{r, warning=T}
+null_mlm0 <- lmer('pt_posttest ~ pt_pretest + (1|ucctherapistid_asr)', 
+                    dt[, .SD[1], client_epi])
+summary(null_mlm0)
+```
+
+`ICC(therapist)` = .03. therapist accounts for 3% of client change
+
+
+### Assess interventions with full model
+Hypothesis: rec, gi, mispirit has differential effect on outcome depending on who use it
+
+```{r}
+eq <- 'pt_posttest ~ pt_pretest + mispirit + ave_REC + ave_GI + (ave_REC+mispirit+ave_GI|ucctherapistid_asr)'
+
+model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+
+## Singularity occurred. Try Bayesian model
+priors <- get_prior(eq, dt[, .SD[1], client_epi])
+model_bmlm_intv <- brm(eq, dt[, .SD[1], client_epi], prior=priors)
+```
+
+Regular MLM cannot estimate random-slope models due to singularity (perhaps too small sample size compared to N of therapists). Bayesian MLM found significant random effects.   
+`sd_REC` = .61, CI [.03, 1.82] *    
+`sd_GI` = .38, CI [.01, 1.18] *  
+`sd_mispirit` = .01, CI [0, .04]  
+`sd_intercept` = .11, CI [.01, .35] *  
+`sigma` = .58, CI [.56, .61] *  
+
+Fixed effects:  
+`pre` = .65, CI [.59, .70] *  
+`REC` = -1.76, CI [-3.11, -.45] *  
+`GI` = -.27, CI [-1.28, .73]
+`mispirit` = 0, CI [-.03, .02]
+
+
+### Also try fixed effect. i.e., assume effect of interventions on outcome is the same for everyone
+```{r}
+eq <- 'pt_posttest ~ pt_pretest + mispirit + ave_REC + (1|ucctherapistid_asr)'
+model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+```
+
+`sigma^2` = .34. Converged with Bayesian estimate (sqrt(.34) = .58)
+`ICC(therapist)` = .02, 2% of difference in residual is due to therapists
 

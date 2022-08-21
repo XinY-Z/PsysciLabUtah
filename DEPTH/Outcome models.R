@@ -1571,7 +1571,7 @@ fitControl_mn_pc <-
   trainControl(
     method='repeatedcv',
     number=10,
-    repeats=10,
+    repeats=5,
     classProbs=T,
     summaryFunction=multiClassSummary,
     savePredictions=T

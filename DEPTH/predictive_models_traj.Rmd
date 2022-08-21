@@ -1,0 +1,259 @@
+---
+title: "Predicting models for trajectory classes"
+author: "Xinyao Zhang"
+date: '2022-08-05'
+output: html_document
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(root.dir=paste0(getwd(), '/DEPTH'))
+```
+
+## Load packages and dataset
+```{r, message=F, warning=F}
+library(caret)
+
+setwd(paste0(getwd(), '/DEPTH'))
+source('dataloader.R')
+```
+
+## Select needed variables
+```{r}
+dat <- dt_sess[, .SD[1], client_epi][!is.na(class), .(
+  con_suic=as.factor(con_suic),
+  att_suic=as.factor(att_suic),
+  trauma=as.factor(trauma),
+  class=as.factor(make.names(class))
+)]
+```
+
+## create a function that fits `caret` models
+default setting:  
+`validation method`: Repeated 10-fold cross-validation, repeated 5 times  
+`search method`: grid search  
+`loss function`: log loss  
+`iteration`: 50
+
+```{r}
+caretTrain <- function(DT, algorithm, y, iteration=50, loss_function='logLoss', resample_method=NULL, search_method='grid', seed=123, ...) {
+  
+  ## initiation
+  recalls <- c()
+  precisions <- c()
+  f1s <- c()
+  
+  set.seed(seed)
+  
+  ## iterative training to minimize random error introduced by train-test split
+  i <- 1
+  while(i <= iteration) {
+    split_ind <- createDataPartition(DT[[y]], p=0.8, list=F)
+    dat_train <- DT[split_ind]
+    dat_test <- DT[!split_ind]
+    
+    ## set resampling method for unbalanced data
+    if(resample_method=='up') {
+      dat_train <- 
+        setDT(upSample(x=dat_train[, .SD, .SDcols=!y], y=dat_train[, class]))
+    }
+    else if(resample_method=='down') {
+      dat_train <- 
+        setDT(downSample(x=dat_train[, .SD, .SDcols=!y], y=dat_train[, class]))
+    }
+    else if(resample_method=='smote') {
+      dat_train <- 
+        setDT(DMwR::SMOTE(formula(sprintf('%s ~ .', y)), dat_train))
+    }
+    
+    ## set training controls and train
+    fitControl <- trainControl(
+      method='repeatedcv',
+      number=10,
+      repeats=5,
+      search=search_method,
+      selectionFunction='best',
+      classProbs=T,
+      summaryFunction=multiClassSummary
+    )
+
+    fit <- train(
+      form=formula(sprintf('%s ~ .', y)),
+      data=dat_train,
+      method=algorithm,
+      metric=loss_function,
+      trControl=fitControl,
+      ...
+    )
+    
+    ## assess model performance
+    preds <- predict(fit, dat_test[, .SD, .SDcols=!y], )
+
+    rec <- recall(table(preds, dat_test[[y]]))
+    prec <- precision(table(preds, dat_test[[y]]))
+    f1 <- F_meas(table(preds, dat_test[[y]]))
+    
+    recalls <- c(recalls, rec)
+    precisions <- c(precisions, prec)
+    f1s <- c(f1s, f1)
+
+    i <- i + 1
+  }
+  
+  ## report the metrics
+  print('Mean recall:')
+  print(mean(recalls, na.rm=T))
+  print('Mean precision:')
+  print(mean(precisions, na.rm=T))
+  print('Mean F1:')
+  print(mean(f1s, na.rm=T))
+  
+  return(fit)
+}
+```
+
+## get the baseline 
+To account for biases due to random data splitting, the entire process is repeated M times and taking the average.  
+`M`: 100
+
+```{r, warning=F}
+baseline_meas <- function(obs, meas=NULL, type='bootstrap', iter=100, seed=123) {
+  if(!is.factor(obs)) {
+    stop('Check if obs is a factor vector. If you are using numeric vector, convert the vector to factor by as.factor')
+  }
+  if(is.null(meas)) {
+    stop('Please specify measure. You may type "recall", "precision", or "f1"')
+  }
+  else if(!meas %in% c('recall', 'precision', 'f1')) {
+    stop('Unknown measure. Please type "recall", "precision", or "f1"')
+  }
+  
+  measure <- function(cm, meas, majority=F) {
+    precision <- diag(cm) / rowSums(cm)
+    recall <- diag(cm) / colSums(cm)
+    f1 <- ifelse(precision+recall==0, 0, 2*precision*recall/(precision+recall))
+    
+    precision[is.na(precision)] <- 0
+    recall[is.na(recall)] <- 0
+    f1[is.na(f1)] <- 0
+    
+    if(isFALSE(majority)) FUN <- mean
+    else FUN <- max
+    
+    if(meas=='recall') FUN(recall)
+    else if(meas=='precision') FUN(precision)
+    else if(meas=='f1') FUN(f1)
+  }
+  if(type=='bootstrap') {
+    random_sample <- function(obs) {
+      c <- levels(obs)
+      n <- length(obs)
+      p <- prop.table(table(obs))
+      x <- sample(c, size=n, p=p, replace=T)
+      return(x)
+    }
+    set.seed(seed)
+    scores <- c()
+    i <- 1
+    while(i <= iter) {
+      preds <- factor(random_sample(obs), levels=levels(obs))
+      score <- measure(table(preds, obs), meas=meas)
+      scores <- c(scores, score)
+      i <- i + 1
+    }
+  }
+  else if(type=='surrogate') {
+    set.seed(seed)
+    scores <- c()
+    i <- 1
+    while(i <= iter) {
+      preds <<- sample(obs, length(obs))
+      score <- measure(table(preds, obs), meas=meas)
+      scores <- c(scores, score)
+      i <- i + 1
+    }
+  }
+  else if(type=='majority') {
+    level <- levels(obs)
+    scores <- c()
+    for(l in level) {
+      preds <- factor(rep(l, length(obs)), levels=levels(obs))
+      score <- measure(table(preds, obs), meas=meas, majority=T)
+      scores <- c(scores, score)
+    }
+  }
+  else {
+    stop('Unknown method. Currently only supports "bootstrap", "surrogate", "majority".')
+  }
+  return(mean(scores, na.rm=T))
+}
+baseline_vals <- c()
+
+## iterative training to minimize random error introduced by train-test split
+i <- 1
+set.seed(123)
+while(i <= 50) {
+  split_ind <- createDataPartition(dat$class, p=0.8, list=F)
+  dat_train <- dat[split_ind]
+  dat_test <- dat[!split_ind]
+  baseline_val <- baseline_meas(dat_test$class, 'f1', type='bootstrap')
+  baseline_vals <- c(baseline_vals, baseline_val)
+}
+print(mean(baseline_vals, na.rm=T))
+```
+[1] 0.2496278
+
+## test LASSO
+```{r}
+model_lasso_misc <- caretTrain(dat, 'lasso', 'pt_posttest', 100)
+```
+[1] "Mean R2:"
+[1] 0.4002157
+[1] "Mean RMSE:"
+[1] 0.5914227
+
+## test elastic net
+```{r}
+model_enet_misc <- caretTrain(dat, 'enet', 100)
+```
+
+## test stochastic gradient boosting
+```{r}
+model_sgb_misc <- caretTrain(dat, 'gbm', 30)
+```
+[1] "Mean R2:"
+[1] 0.3912287
+[1] "Mean RMSE:"
+[1] 0.5989364
+
+## test extreme gradient boosting
+```{r}
+caretTrain(dat, 'xgbDART', 30)
+```
+
+## test k nearest neighbors
+```{r}
+caretTrain(dat, 'knn', 100)
+```
+
+## test random forest
+```{r}
+model_rf_misc <- caretTrain(dat, 'ranger', 30)
+```
+
+## test full connected neural networks
+```{r}
+model_mlp_misc <- caretTrain(dat, 'mlp', 30)
+```
+[1] "Mean R2:"
+[1] 0.3322299
+[1] "Mean RMSE:"
+[1] 0.6793567
+
+## test stacked autoencoder deep neural net
+```{r}
+model_dnn_misc <- caretTrain(dat, 'dnn', 10)
+```
+[1] "Mean R2:"
+[1] 0.01432013
+[1] "Mean RMSE:"
+[1] 0.7839144
