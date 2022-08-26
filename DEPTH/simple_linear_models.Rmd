@@ -15,6 +15,7 @@ library(data.table)
 library(lmerTest)
 library(lavaan)
 library(brms)
+library(effectsize)
 
 setwd("./DEPTH")
 source('dataloader.R')
@@ -87,9 +88,14 @@ summary(model3_lm_intv)
 summary(model5_lm_intv)
 summary(model8_lm_intv)
 summary(model9_lm_intv)
+
+## double-check multicollinearity
+car::vif(model11_lm_intv)
 ```
 
-Significant predictors: `REC`, `mispirit`, `GI`. But significance of mispirit disappeared after adding rec.
+Significant predictors: `REC`, `mispirit`, `GI`. But significance of mispirit disappeared after adding rec.  
+
+VIF is slightly high but acceptable. This might be because they are inherently dependent - Coding A will not be able to code B at the same talkturn.
 
 ## Check if the effect of mispirit on pt_posttest is mediated by REC
 ```{r}
@@ -102,7 +108,7 @@ model_med <- sem(model=eq, data=dt[, .SD[1], client_epi])
 summary(model_med, fit.measures=T, rsquare=T)
 ```
 
-Complete metiation found. Zac: People coded mispirit partly by looking at REC.
+Complete mediation found. Zac: People coded mispirit partly by looking at REC.
 
 
 ## Multilevel models to assess grouping effects
@@ -132,8 +138,9 @@ priors <- get_prior(eq, dt[, .SD[1], client_epi])
 model_bmlm_intv <- brm(eq, dt[, .SD[1], client_epi], prior=priors)
 ```
 
-Regular MLM cannot estimate random-slope models due to singularity (perhaps too small sample size compared to N of therapists). Bayesian MLM found significant random effects.   
-`sd_REC` = .61, CI [.03, 1.82] *    
+Regular MLM cannot estimate random-slope models due to singularity (perhaps too small sample size vs. N of therapists). Bayesian MLM found significant random effects.  
+
+`sd_REC` = .61, CI [.03, 1.82] *  
 `sd_GI` = .38, CI [.01, 1.18] *  
 `sd_mispirit` = .01, CI [0, .04]  
 `sd_intercept` = .11, CI [.01, .35] *  
@@ -148,10 +155,82 @@ Fixed effects:
 
 ### Also try fixed effect. i.e., assume effect of interventions on outcome is the same for everyone
 ```{r}
-eq <- 'pt_posttest ~ pt_pretest + mispirit + ave_REC + (1|ucctherapistid_asr)'
+eq <- 'pt_posttest ~ pt_pretest + mispirit + ave_REC + ave_GI + (1|ucctherapistid_asr)'
 model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
 ```
 
 `sigma^2` = .34. Converged with Bayesian estimate (sqrt(.34) = .58)
 `ICC(therapist)` = .02, 2% of difference in residual is due to therapists
 
+
+### Stratify predictors and redo full model
+```{r}
+## scale variables by grand mean and group-centered means
+dt[, ave_REC_group := scale(ave_REC, scale=F), by=ucctherapistid_asr]
+dt[, mispirit_group := scale(mispirit, scale=F), by=ucctherapistid_asr]
+dt[, ave_GI_group := scale(ave_GI, scale=F), by=ucctherapistid_asr]
+
+temp <- dt[, .(ave_REC_grand=mean(ave_REC)), ucctherapistid_asr][
+  , ave_REC_grand := scale(ave_REC_grand, scale=F)
+]
+dt <- temp[dt, on='ucctherapistid_asr']
+temp <- dt[, .(ave_GI_grand=mean(ave_GI)), ucctherapistid_asr][
+  , ave_GI_grand := scale(ave_GI_grand, scale=F)
+]
+dt <- temp[dt, on='ucctherapistid_asr']
+temp <- dt[, .(mispirit_grand=mean(mispirit)), ucctherapistid_asr][
+  , mispirit_grand := scale(mispirit_grand, scale=F)
+]
+dt <- temp[dt, on='ucctherapistid_asr']
+rm(temp)
+
+## modeling
+eq <- '
+  pt_posttest ~ pt_pretest + ave_REC_group + ave_GI_group + mispirit_group + ave_REC_grand + ave_GI_grand + mispirit_grand + (1|ucctherapistid_asr)
+'
+
+model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+
+summary(model_mlm_intv)
+
+t_to_eta2(-1.652, 874.838542)
+t_to_eta2(-2.166, 45.702597)
+t_to_eta2(23.779, 894.137517)
+```
+
+Significant therapist effect with `REC`: B=-3.39, SE=1.57, p=.036, eta2=.09 [0, .24]  
+Marginal significant client effect with `REC`: B=-1.20, SE=.72, p=.099, eta2=.003 [0, .01]  
+No other significant intervention-related predictors.
+
+### Stratify predictors mentioned in pdrp
+```{r}
+## scale variables by grand mean and group-centered means
+dt[, ave_QUO_group := scale(ave_QUO, scale=F), by=ucctherapistid_asr]
+dt[, empathy_group := scale(empathy, scale=F), by=ucctherapistid_asr]
+
+temp <- dt[, .(ave_QUO_grand=mean(ave_QUO)), ucctherapistid_asr][
+  , ave_QUO_grand := scale(ave_QUO_grand, scale=F)
+]
+dt <- temp[dt, on='ucctherapistid_asr']
+temp <- dt[, .(empathy_grand=mean(empathy)), ucctherapistid_asr][
+  , empathy_grand := scale(empathy_grand, scale=F)
+]
+dt <- temp[dt, on='ucctherapistid_asr']
+rm(temp)
+
+## modeling
+eq <- '
+  pt_posttest ~ pt_pretest + ave_REC_group + ave_QUO_group + empathy_group + ave_REC_grand + ave_QUO_grand + empathy_grand + (1|ucctherapistid_asr)
+'
+
+model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+
+summary(model_mlm_intv)
+
+t_to_eta2(-1.818, 877.253712)
+t_to_eta2(-3.528, 37.969110)
+```
+
+Therapist difference in `REC` again predicts post distress, B=-3.80, SE=1.08, p=.001, eta2=.25 [.07, .42]  
+Dyad difference in `REC` marginall predicts post distress, B=-1.24, SE=.68, p=.069, eta2=.004 [0, .01]  
+All predictors are insignificant.  
