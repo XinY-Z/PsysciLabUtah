@@ -10,18 +10,26 @@ knitr::opts_chunk$set(root.dir=paste0(getwd(), '/DEPTH'))
 ```
 
 ## Load the packages and data
+
 ```{r, message=F, warning=F}
 library(data.table)
 library(lmerTest)
 library(lavaan)
 library(brms)
 library(effectsize)
+library(performance)
+library(mice)
+library(miceadds)
+library(finalfit)
 
 setwd("./DEPTH")
 source('dataloader.R')
+
+dt_epi <- dt[, .SD[1], client_epi]
 ```
 
 ## Simple hierarchical regression on residualized gain model
+
 ```{r}
 ## check the assumption of residualized gain model
 ## predictors and covariate should have small correlations
@@ -95,9 +103,10 @@ car::vif(model11_lm_intv)
 
 Significant predictors: `REC`, `mispirit`, `GI`. But significance of mispirit disappeared after adding rec.  
 
-VIF is slightly high but acceptable. This might be because they are inherently dependent - Coding A will not be able to code B at the same talkturn.
+VIF is slightly high but acceptable. This might be because they are inherently dependent - Coding A will not be able to code B at the same talkturn.  
 
 ## Check if the effect of mispirit on pt_posttest is mediated by REC
+
 ```{r}
 eq <- '
   pt_posttest ~ pt_pretest + ave_REC + mispirit
@@ -110,22 +119,60 @@ summary(model_med, fit.measures=T, rsquare=T)
 
 Complete mediation found. Zac: People coded mispirit partly by looking at REC.
 
-
 ## Multilevel models to assess grouping effects
+
 ### Assess null model to estimate therapist effect
 
-Residualized gain model is used. ICC essentially estimates therapist effect in therapeutic gain.
-
 ```{r, warning=T}
+# Residualized gain model. ICC essentially estimates therapist effect in therapeutic gain
 null_mlm0 <- lmer('pt_posttest ~ pt_pretest + (1|ucctherapistid_asr)', 
+                    dt[, .SD[1], client_epi])
+summary(null_mlm0)
+
+# Difference model
+null_mlm0 <- lmer('pt_posttest - pt_pretest ~ 1 + (1|ucctherapistid_asr)', 
                     dt[, .SD[1], client_epi])
 summary(null_mlm0)
 ```
 
-`ICC(therapist)` = .03. therapist accounts for 3% of client change
+`ICC(therapist)` = .022 - .03. therapist accounts for 2-3% of client change
 
+### Based on Baldwin et al. (2007), between- and within-therapist pretest should also be assessed
+
+```{r}
+## calculate group mean centered pretest
+dt_epi[, pt_pretest_group := scale(pt_pretest, scale=F), by=ucctherapistid_asr]
+
+## calculate grand mean centered group means
+temp <- dt_epi[, .(pt_pretest_grand=mean(pt_pretest, na.rm=T)), ucctherapistid_asr][, pt_pretest_grand := scale(pt_pretest_grand, scale=F)]
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+rm(temp)
+
+## calculate grand mean centered pretest
+dt_epi[, pt_pretest_grand2 := scale(pt_pretest, scale=F)]
+
+null_mlm0 <- lmer(
+  'pt_posttest ~ pt_pretest_grand + pt_pretest_group + pt_pretest_grand:pt_pretest_group + (1|ucctherapistid_asr)', 
+  dt_epi
+)
+summary(null_mlm0)
+icc(null_mlm0)
+r2(null_mlm0)
+```
+
+Significant within-therapist and between-therapist relationships between pre and post, `pre_group` = .65***  
+`pre_grand` = .64***  
+No contextual effect (Randenbush & Bryk, 2022, p. 139) - no difference between within-therapist and between-therapist relationship between pre and post.
+
+Significant cross-level interaction,  
+`pre_group:pre_grand` = -.28, p = .0487  
+
+`ICC(therapist)` = .032  
+
+FYI, bayesian model shows significant between-therapist variance in effect of pre on post, `sd_pre` = .08 [.01, .16]
 
 ### Assess interventions with full model
+
 Hypothesis: rec, gi, mispirit has differential effect on outcome depending on who use it
 
 ```{r}
@@ -142,47 +189,102 @@ Regular MLM cannot estimate random-slope models due to singularity (perhaps too 
 
 `sd_REC` = .61, CI [.03, 1.82] *  
 `sd_GI` = .38, CI [.01, 1.18] *  
-`sd_mispirit` = .01, CI [0, .04]  
+`sd_mispirit` = .01, CI [0, .04]
 `sd_intercept` = .11, CI [.01, .35] *  
 `sigma` = .58, CI [.56, .61] *  
 
 Fixed effects:  
 `pre` = .65, CI [.59, .70] *  
 `REC` = -1.76, CI [-3.11, -.45] *  
-`GI` = -.27, CI [-1.28, .73]
+`GI` = -.27, CI [-1.28, .73]  
 `mispirit` = 0, CI [-.03, .02]
 
+FYI, if allows `pre` to vary between therapists, then  
+`sd_pre` = .07, CI [.01, .15] *  
+`sd_REC` = .51, CI [.02, 1.64] *  
+`sd_GI` = .35, CI [.01, 1.08] *  
+`sd_mispirit` = .01, CI [0, .04]  
+`sd_intercept` = .09, CI [0, .27]  
+`sigma` = .58, CI [.55, .61] *  
+
+Fixed effects:\
+`pre` = .65, CI [.59, .71] *  
+`REC` = -1.61, CI [-2.91, -.33] *  
+`GI` = -.25, CI [-1.23, .72]  
+`mispirit` = -.01, CI [-.03, .02]
+
+### Assess interventions with full model using predictors from PDRP
+
+```{r}
+eq <- 'pt_posttest ~ pt_pretest + empathy + ave_REC + ave_QUO + (pt_pretest+ave_REC+empathy+ave_QUO|ucctherapistid_asr)'
+
+model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+
+## Singularity occurred. Try Bayesian model
+priors <- get_prior(eq, dt[, .SD[1], client_epi])
+model_bmlm_intv <- brm(eq, dt[, .SD[1], client_epi], prior=priors)
+```
+
+Bayesian MLM found significant random effects.
+
+`sd_REC` = .50, CI [.02, 1.53] \*\
+`sd_QUO` = .80, CI [.03, 2.38] \*\
+`sd_empathy` = .03, CI [0, .08]\
+`sd_intercept` = .09, CI [0, .28]\
+`sigma` = .58, CI [.56, .61] \*
+
+Fixed effects:\
+`pre` = .65, CI [.59, .70] \*\
+`REC` = -1.87, CI [-3.03, -.70] \*\
+`QUO` = .18, CI [-1.40, 1.80]\
+`empathy` = 0, CI [-.10, .10]
+
+FYI, if adding `pre` as random effect, then\
+`sd_pre` = .07, CI [.01, .15] \*\
+`sd_REC` = .45, CI [.02, 1.44] \*\
+`sd_QUO` = .76, CI [.03, 2.23] \*\
+`sd_empathy` = .02, CI [0, .06]\
+`sd_intercept` = .08, CI [0, .26]\
+`sigma` = .58, CI [.55, .61] \*
+
+Fixed effects:\
+`pre` = .65, CI [.59, .71] \*\
+`REC` = -1.81, CI [-3.06, -.54] \*\
+`QUO` = .22, CI [-1.38, 1.77]\
+`empathy` = -.01, CI [-.12, .10]
 
 ### Also try fixed effect. i.e., assume effect of interventions on outcome is the same for everyone
+
 ```{r}
 eq <- 'pt_posttest ~ pt_pretest + mispirit + ave_REC + ave_GI + (1|ucctherapistid_asr)'
 model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
 ```
 
-`sigma^2` = .34. Converged with Bayesian estimate (sqrt(.34) = .58)
-`ICC(therapist)` = .02, 2% of difference in residual is due to therapists
-
+`sigma^2` = .34. Converged with Bayesian estimate (sqrt(.34) = .58) `ICC(therapist)` = .02, 2% of difference in residual is due to therapists
 
 ### Stratify predictors and redo full model
+
 ```{r}
 ## scale variables by grand mean and group-centered means
-dt[, ave_REC_group := scale(ave_REC, scale=F), by=ucctherapistid_asr]
-dt[, mispirit_group := scale(mispirit, scale=F), by=ucctherapistid_asr]
-dt[, ave_GI_group := scale(ave_GI, scale=F), by=ucctherapistid_asr]
+dt_epi[, ave_REC_group := scale(ave_REC, scale=F), by=ucctherapistid_asr]
+dt_epi[, mispirit_group := scale(mispirit, scale=F), by=ucctherapistid_asr]
+dt_epi[, ave_GI_group := scale(ave_GI, scale=F), by=ucctherapistid_asr]
 
-temp <- dt[, .(ave_REC_grand=mean(ave_REC)), ucctherapistid_asr][
+temp <- dt_epi[, .(ave_REC_grand=mean(ave_REC, na.rm=T)), ucctherapistid_asr][
   , ave_REC_grand := scale(ave_REC_grand, scale=F)
 ]
-dt <- temp[dt, on='ucctherapistid_asr']
-temp <- dt[, .(ave_GI_grand=mean(ave_GI)), ucctherapistid_asr][
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+temp <- dt_epi[, .(ave_GI_grand=mean(ave_GI, na.rm=T)), ucctherapistid_asr][
   , ave_GI_grand := scale(ave_GI_grand, scale=F)
 ]
-dt <- temp[dt, on='ucctherapistid_asr']
-temp <- dt[, .(mispirit_grand=mean(mispirit)), ucctherapistid_asr][
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+temp <- dt_epi[, .(mispirit_grand=mean(mispirit, na.rm=T)), ucctherapistid_asr][
   , mispirit_grand := scale(mispirit_grand, scale=F)
 ]
-dt <- temp[dt, on='ucctherapistid_asr']
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
 rm(temp)
+
+dt_epi[, ave_REC_grand2 := scale(ave_REC, scale=F)]
 
 ## modeling
 eq <- '
@@ -192,10 +294,6 @@ eq <- '
 model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
 
 summary(model_mlm_intv)
-
-t_to_eta2(-1.652, 874.838542)
-t_to_eta2(-2.166, 45.702597)
-t_to_eta2(23.779, 894.137517)
 ```
 
 Significant therapist effect with `REC`: B=-3.39, SE=1.57, p=.036, eta2=.09 [0, .24]  
@@ -203,34 +301,202 @@ Marginal significant client effect with `REC`: B=-1.20, SE=.72, p=.099, eta2=.00
 No other significant intervention-related predictors.
 
 ### Stratify predictors mentioned in pdrp
+
 ```{r}
 ## scale variables by grand mean and group-centered means
-dt[, ave_QUO_group := scale(ave_QUO, scale=F), by=ucctherapistid_asr]
-dt[, empathy_group := scale(empathy, scale=F), by=ucctherapistid_asr]
+dt_epi[, ave_QUO_group := scale(ave_QUO, scale=F), by=ucctherapistid_asr]
+dt_epi[, ave_empathy_group := scale(ave_empathy, scale=F), by=ucctherapistid_asr]
 
-temp <- dt[, .(ave_QUO_grand=mean(ave_QUO)), ucctherapistid_asr][
+temp <- dt_epi[, .(ave_QUO_grand=mean(ave_QUO, na.rm=T)), ucctherapistid_asr][
   , ave_QUO_grand := scale(ave_QUO_grand, scale=F)
 ]
-dt <- temp[dt, on='ucctherapistid_asr']
-temp <- dt[, .(empathy_grand=mean(empathy)), ucctherapistid_asr][
-  , empathy_grand := scale(empathy_grand, scale=F)
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+temp <- dt_epi[, .(ave_empathy_grand=mean(empathy, na.rm=T)), ucctherapistid_asr][
+  , ave_empathy_grand := scale(ave_empathy_grand, scale=F)
 ]
-dt <- temp[dt, on='ucctherapistid_asr']
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
 rm(temp)
+
+dt_epi[, ave_QUO_grand2 := scale(ave_QUO, scale=F)]
+dt_epi[, ave_empathy_grand2 := scale(ave_empathy, scale=F)]
 
 ## modeling
 eq <- '
-  pt_posttest ~ pt_pretest + ave_REC_group + ave_QUO_group + empathy_group + ave_REC_grand + ave_QUO_grand + empathy_grand + (1|ucctherapistid_asr)
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + ave_REC_group + ave_REC_grand + ave_QUO_group + ave_QUO_grand + ave_empathy_group + ave_empathy_grand + (1|ucctherapistid_asr)
 '
 
-model_mlm_intv <- lmer(eq, dt[, .SD[1], client_epi])
+model_mlm_intv <- lmer(eq, dt_epi)
 
 summary(model_mlm_intv)
-
-t_to_eta2(-1.818, 877.253712)
-t_to_eta2(-3.528, 37.969110)
+icc(model_mlm_intv)
+r2(model_mlm_intv)
 ```
 
-Therapist difference in `REC` again predicts post distress, B=-3.80, SE=1.08, p=.001, eta2=.25 [.07, .42]  
-Dyad difference in `REC` marginall predicts post distress, B=-1.24, SE=.68, p=.069, eta2=.004 [0, .01]  
-All predictors are insignificant.  
+Therapist difference in `REC` again predicts post distress, B=-3.73, SE=1.08, p=.001, eta2=.25 [.07, .42]  
+Dyad difference in `REC` marginally predicts post distress, B=-1.35, SE=.68, p=.069, eta2=.004 [0, .01]  
+All other predictors are insignificant.
+
+ICC reduction (.032-.015)/.032=.531
+
+
+## Add alliance as a predictor
+### Assess alliance missing pattern
+
+21.8% of the sessions missing WAI measure. Need to check missing pattern.
+
+```{r}
+preds <- c('pt_pretest', 'pt_posttest', 'ccaps_di', 'REC', 'QUO', 'empathy')
+
+missing_pairs(dt_sess[, .(pt_pretest, pt_posttest, satisfaction, ccaps_di, REC, QUO, empathy)], dependent='satisfaction', explanatory=preds)
+
+missing_compare(dt_sess[, .(pt_pretest, pt_posttest, satisfaction, ccaps_di, REC, QUO, empathy)], dependent='satisfaction', explanatory=preds, na_include=T, digits=c(2,2,2,1,0))
+```
+
+Missing pattern is associated with `ccaps_di`, `pt_posttest`, `REC`, and `empathy`, but not with `pt_pretest`. Clients with less improvement may also be those who were resistant to fill out WAI measure.  
+Therefore, it's not MCAR, but should be MAR or MNAR.
+
+### Imputation 0: listwise deletion
+For sensitivity analysis purposes. 
+
+```{r}
+### Baldwin's (2007) model
+dt_epi[, alliance_group := scale(alliance, scale=F), by=ucctherapistid_asr]
+temp <- dt_epi[, .(alliance_grand=mean(alliance, na.rm=T)), ucctherapistid_asr][
+  , alliance_grand := scale(alliance_grand, scale=F)
+]
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+rm(temp)
+
+dt_epi[, alliance_grand2 := scale(alliance, scale=F)]
+
+eq <- '
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + alliance_group + alliance_grand + (1|ucctherapistid_asr)
+'
+
+null_mlm1 <- lmer(eq, dt_epi)
+
+icc(null_mlm1)
+```
+
+`ICC` = .024, about 25% reduction. 
+
+
+### Imputation 1: mice with random forest, regardless of multileveling
+
+```{r}
+## imputation
+dt_sess_ <- dt_sess[, .(FA, GI, MIA, MIN, QUC, QUO, REC, RES, ST, empathy, mispirit, ccaps_di, satisfaction)]
+
+imp_sess1 <- mice(dt_sess_, method='rf', blocks=c('satisfaction', 'ccaps_di'), maxit=20, print=F)
+
+dt_sess_imp1 <- complete(imp_sess1, 'broad')
+setDT(dt_sess_imp1)
+dt_sess_imp1[, 'client_epi' := dt_sess$client_epi]
+dt_sess_imp1[, 'satisfaction' := rowMeans(.SD), .SDcols=c('satisfaction.1', 'satisfaction.2', 'satisfaction.3', 'satisfaction.4', 'satisfaction.5')]
+dt_sess_imp1[, 'alliance' := mean(satisfaction), client_epi]
+
+dt_epi[, 'alliance' := NULL]
+dt_epi <- dt_sess_imp1[, .(alliance=alliance[1]), client_epi][dt_epi, on='client_epi']
+
+## rerun the analyses
+### Baldwin's (2007) model
+dt_epi[, alliance_group := scale(alliance, scale=F), by=ucctherapistid_asr]
+temp <- dt_epi[, .(alliance_grand=mean(alliance, na.rm=T)), ucctherapistid_asr][
+  , alliance_grand := scale(alliance_grand, scale=F)
+]
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+rm(temp)
+
+dt_epi[, alliance_grand2 := scale(alliance, scale=F)]
+
+eq <- '
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + alliance_group + alliance_grand + (1|ucctherapistid_asr)
+'
+
+null_mlm1 <- lmer(eq, dt_epi)
+
+icc(null_mlm1)
+```
+
+`ICC` = .031, only 5% change - Cannot replicate Baldwin's study. Session-level imputation is inappropriate? Maybe we need to take into account the multilevel structure of data.
+
+
+### Imputation 2: mice with multilevel pmm
+
+```{r}
+## imputation
+dt_sess_ <- dt_sess[, .(ucctherapistid_asr, client_epi, FA, GI, MIA, MIN, QUC, QUO, REC, RES, ST, empathy, mispirit, ccaps_di, satisfaction)]
+preds <- make.predictorMatrix(dt_sess_)
+impMeths <- make.method(dt_sess_)
+
+impMeths[c('ccaps_di', 'satisfaction')] <- 'ml.lmer'
+preds[, c('ucctherapistid_asr', 'client_epi')] <- 0
+preds <- preds[c('ccaps_di', 'satisfaction'), ]
+cluster <- list()
+cluster[['ccaps_di']] <- c('client_epi', 'ucctherapistid_asr')
+cluster[['satisfaction']] <- c('client_epi', 'ucctherapistid_asr')
+
+imp_sess2 <- mice(dt_sess_, m=5, blocks=c('satisfaction', 'ccaps_di'), predictorMatrix= preds, levels_id=cluster, maxit=20, print=F)
+
+dt_sess_imp2 <- complete(imp_sess2, 'broad')
+setDT(dt_sess_imp2)
+dt_sess_imp2[, 'client_epi' := dt_sess$client_epi]
+dt_sess_imp2[, 'satisfaction' := rowMeans(.SD), .SDcols=c('satisfaction.1', 'satisfaction.2', 'satisfaction.3', 'satisfaction.4', 'satisfaction.5')]
+dt_sess_imp2[, 'alliance' := mean(satisfaction), client_epi]
+
+dt_epi[, 'alliance' := NULL]
+dt_epi <- dt_sess_imp2[, .(alliance=alliance[1]), client_epi][dt_epi, on='client_epi']
+
+
+## rerun the analyses
+### Baldwin's (2007) model
+dt_epi[, alliance_group := scale(alliance, scale=F), by=ucctherapistid_asr]
+temp <- dt_epi[, .(alliance_grand=mean(alliance, na.rm=T)), ucctherapistid_asr][
+  , alliance_grand := scale(alliance_grand, scale=F)
+]
+dt_epi <- temp[dt_epi, on='ucctherapistid_asr']
+rm(temp)
+
+dt_epi[, alliance_grand2 := scale(alliance, scale=F)]
+
+eq <- '
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + alliance_grand2 + alliance_grand + (1|ucctherapistid_asr)
+'
+
+null_mlm1 <- lmer(eq, dt_epi)
+
+icc(null_mlm1)
+```
+
+`ICC` = .028, about 12.5% reduction. Much better than imputation 1. Different from listwise imputation. Sensitivity analysis not passsed. Should opt for imputation.
+
+
+```{r}
+## modeling
+eq <- '
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + alliance_group + alliance_grand + ave_REC_group + ave_REC_grand + ave_QUO_group + ave_QUO_grand + ave_empathy_group + ave_empathy_grand + (1|ucctherapistid_asr)
+'
+
+model_mlm_intv <- lmer(eq, dt_epi)
+
+summary(model_mlm_intv)
+icc(model_mlm_intv)
+r2(model_mlm_intv)
+```
+
+`ICC` = .010, additional 56.2% reduction. Similar to the number from the models without alliance.  
+
+### Full model with all the interactions included
+
+```{r}
+## modeling
+eq <- '
+  pt_posttest ~ pt_pretest_group + pt_pretest_grand + pt_pretest_group:pt_pretest_grand + alliance_group + alliance_grand + ave_REC_group + ave_REC_grand + ave_QUO_group + ave_QUO_grand + ave_empathy_group + ave_empathy_grand + alliance_group:ave_REC_group + alliance_group:ave_REC_grand + alliance_group:ave_QUO_group + alliance_group:ave_QUO_grand + alliance_group:ave_empathy_group + alliance_group:ave_empathy_grand + alliance_grand:ave_REC_group + alliance_grand:ave_REC_grand + alliance_grand:ave_QUO_group + alliance_grand:ave_QUO_grand + alliance_grand:ave_empathy_group + alliance_grand:ave_empathy_grand + ave_REC_group:ave_REC_grand + ave_REC_group:ave_QUO_group + ave_REC_group:ave_QUO_grand + ave_REC_group:ave_empathy_group + ave_REC_group:ave_empathy_grand + ave_REC_grand:ave_QUO_group + ave_REC_grand:ave_QUO_grand + ave_REC_grand:ave_empathy_group + ave_REC_grand:ave_empathy_grand + ave_QUO_group:ave_QUO_grand + ave_QUO_group:ave_empathy_group + ave_QUO_group:ave_empathy_grand + ave_QUO_grand:ave_empathy_group + ave_QUO_grand:ave_empathy_grand + ave_empathy_group:ave_empathy_grand + (1|ucctherapistid_asr)
+'
+
+model_mlm_intv1 <- lmer(eq, dt_epi)
+
+summary(model_mlm_intv1)
+icc(model_mlm_intv1)
+r2(model_mlm_intv1)
+```
